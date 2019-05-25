@@ -7,8 +7,9 @@ from stat import S_ISDIR
 
 # The PCI device class for ETHERNET devices
 ETHERNET_CLASS = "0200"
-
+LSPCI_PATH = '/usr/bin/lspci'
 RECV_BYTES = 4096
+ADVANCED = True
 
 class RemoteInfo:
     """
@@ -21,9 +22,10 @@ class RemoteInfo:
         # Dict of ethernet devices present. Dictionary indexed by PCI address.
         # Each device within this is itself a dictionary of device properties
         self.nic_devices = {}
-
-        if host is 'local':
+        print(host)
+        if host == 'local':
             self.local = True
+            print("setting local to true")
         else:
             self.local = False
             # Assuming port as 22.
@@ -92,18 +94,21 @@ class RemoteInfo:
             else:
                 return b"".join(stderr_data)
 
-    def get_pci_device_details(self, dev_id):
+    def get_pci_details(self, dev_id):
         '''This function gets additional details for a PCI device'''
         device = {}
 
-        extra_info = self.check_output(["/usr/sbin/lspci",
+        extra_info = self.check_output([LSPCI_PATH,
                                         "-vmmks", dev_id]).splitlines()
 
         # parse lspci details
         for line in extra_info:
             if len(line) == 0:
                 continue
-            name, value = line.decode().split("\t", 1)
+            if self.local:
+                name, value = line.split("\t", 1)
+            else:
+                name, value = line.decode().split("\t", 1)
             name = name.strip(":") + "_str"
             device[name] = value
         # check for a unix interface name
@@ -130,27 +135,29 @@ class RemoteInfo:
         # first loop through and read details for all devices
         # request machine readable format, with numeric IDs
         dev = {};
-        dev_lines = self.check_output(["/usr/sbin/lspci", "-Dvmmn"]).splitlines()
+        dev_lines = self.check_output([LSPCI_PATH, "-Dvmmn"]).splitlines()
+        print(dev_lines)
         for dev_line in dev_lines:
             if (len(dev_line) == 0):
                 if dev["Class"] == ETHERNET_CLASS:
+                    print("ADDING DEVICE")
                     #convert device and vendor ids to numbers, then add to global
                     dev["Vendor"] = int(dev["Vendor"],16)
                     dev["Device"] = int(dev["Device"],16)
                     self.nic_devices[dev["Slot"]] = dict(dev) # use dict to make copy of dev
             else:
                 values = re.split(r'\t+', str(dev_line))
-                #name, value = dev_line.split(b'\t', 1)
-                name, value = dev_line.decode().split("\t", 1)
+                if self.local:
+                    name, value = dev_line.split('\t', 1)
+                else:
+                    name, value = dev_line.decode().split("\t", 1)
                 dev[name.rstrip(":")] = value
 
         # based on the basic info, get extended text details
         for d in self.nic_devices.keys():
             # get additional info and add it to existing data
-
-            #devices[d] = dict(devices[d].items() +
-            #                  get_pci_device_details(d).items())
-            self.nic_devices[d].update(self.get_pci_device_details(d).items())
+            if ADVANCED:
+                self.nic_devices[d].update(self.get_pci_details(d).items())
             devinfos.append(self.nic_devices[d])
         return devinfos
 
