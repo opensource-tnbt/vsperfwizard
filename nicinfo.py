@@ -1,9 +1,28 @@
-import sys, os, getopt, subprocess
-from os.path import exists, abspath, dirname, basename
-import json
-import re
-import paramiko
+# Copyright 2019-2020 Spirent Communications.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Retrieve information from remote host.
+In this file, we retrive only NIC PICs
+"""
+from __future__ import print_function
+import sys
+import subprocess
+import os
+from os.path import exists
 from stat import S_ISDIR
+import paramiko
 
 # The PCI device class for ETHERNET devices
 ETHERNET_CLASS = "0200"
@@ -11,10 +30,13 @@ LSPCI_PATH = '/usr/bin/lspci'
 RECV_BYTES = 4096
 ADVANCED = True
 
-class RemoteInfo:
+
+#pylint: disable=too-many-instance-attributes
+class RemoteInfo(object):
     """
     Class to extract information from a remote system
     """
+
     def __init__(self, host, username, password):
         """
         Perform Initialization
@@ -34,48 +56,62 @@ class RemoteInfo:
             self.password = password
             self.username = username
             self.client = paramiko.Transport((self.hostname, self.port))
-            self.client.connect(username = self.username,
-                                password = self.password)
-            self.session = self.client.open_channel(kind = 'session')
+            self.client.connect(username=self.username,
+                                password=self.password)
+            self.session = self.client.open_channel(kind='session')
             self.session.get_pty()
             self.sftp = paramiko.SFTPClient.from_transport(self.client)
 
     def sftp_exists(self, path):
+        """
+        Check if remote file exist
+        """
         try:
             self.sftp.stat(path)
             return True
         except IOError:
             return False
-        except FileNotFoundError:
-            return False
+        #except FileNotFoundError:
+        #    return False
 
     def sft_listdir(self, path):
+        """
+        List directories on remote nost
+        """
         files = []
-        for f in self.sftp.listdir_attr(path):
-            if not S_ISDIR(f.st_mode):
-                files.append(f.filename)
+        for fil in self.sftp.listdir_attr(path):
+            if not S_ISDIR(fil.st_mode):
+                files.append(fil.filename)
         return files
 
     def is_connected(self):
+        """
+        Check if session is connected.
+        """
         return self.client.is_active()
 
     def new_channel(self):
+        """
+        FOr every command a new session is setup
+        """
         if not self.is_connected():
             self.client = paramiko.Transport((self.hostname, self.port))
-            self.client.connect(username = self.username,
-                                password = self.password)
-        self.session = self.client.open_channel(kind = 'session')
+            self.client.connect(username=self.username,
+                                password=self.password)
+        self.session = self.client.open_channel(kind='session')
 
     # This is roughly compatible with check_output function in subprocess module
     # which is only available in python 2.7.
     def check_output(self, args, stderr=None):
-        '''Run a command and capture its output'''
+        '''
+        Run a command and capture its output
+        '''
         stdout_data = []
         stderr_data = []
         if self.local:
             return subprocess.Popen(args, stdout=subprocess.PIPE,
                                     stderr=stderr,
-                                    universal_newlines = True).communicate()[0]
+                                    universal_newlines=True).communicate()[0]
         else:
             self.new_channel()
             separator = ' '
@@ -95,7 +131,9 @@ class RemoteInfo:
                 return b"".join(stderr_data)
 
     def get_pci_details(self, dev_id):
-        '''This function gets additional details for a PCI device'''
+        '''
+        This function gets additional details for a PCI device
+        '''
         device = {}
 
         extra_info = self.check_output([LSPCI_PATH,
@@ -128,25 +166,29 @@ class RemoteInfo:
         return device
 
     def get_nic_details(self):
-        '''This function populates the "devices" dictionary. The keys used are
+        '''
+        This function populates the "devices" dictionary. The keys used are
         the pci addresses (domain:bus:slot.func). The values are themselves
-        dictionaries - one for each NIC.'''
+        dictionaries - one for each NIC.
+        '''
         devinfos = []
         # first loop through and read details for all devices
         # request machine readable format, with numeric IDs
-        dev = {};
+        dev = {}
         dev_lines = self.check_output([LSPCI_PATH, "-Dvmmn"]).splitlines()
         print(dev_lines)
         for dev_line in dev_lines:
-            if (len(dev_line) == 0):
+            if len(dev_line) == 0:
                 if dev["Class"] == ETHERNET_CLASS:
                     print("ADDING DEVICE")
-                    #convert device and vendor ids to numbers, then add to global
-                    dev["Vendor"] = int(dev["Vendor"],16)
-                    dev["Device"] = int(dev["Device"],16)
-                    self.nic_devices[dev["Slot"]] = dict(dev) # use dict to make copy of dev
+                    # convert device and vendor ids to numbers, then add to
+                    # global
+                    dev["Vendor"] = int(dev["Vendor"], 16)
+                    dev["Device"] = int(dev["Device"], 16)
+                    self.nic_devices[dev["Slot"]] = dict(
+                        dev)  # use dict to make copy of dev
             else:
-                values = re.split(r'\t+', str(dev_line))
+                # values = re.split(r'\t+', str(dev_line))
                 if self.local:
                     name, value = dev_line.split('\t', 1)
                 else:
@@ -154,34 +196,36 @@ class RemoteInfo:
                 dev[name.rstrip(":")] = value
 
         # based on the basic info, get extended text details
-        for d in self.nic_devices.keys():
+        for dev in self.nic_devices.keys():
             # get additional info and add it to existing data
             if ADVANCED:
-                self.nic_devices[d].update(self.get_pci_details(d).items())
-            devinfos.append(self.nic_devices[d])
+                self.nic_devices[dev].update(self.get_pci_details(dev).items())
+            devinfos.append(self.nic_devices[dev])
         return devinfos
 
-
     def dev_id_from_dev_name(self, dev_name):
-        '''Take a device "name" - a string passed in by user to identify a NIC
-        device, and determine the device id - i.e. the domain:bus:slot.func - for
-        it, which can then be used to index into the devices array'''
-        dev = None
+        '''
+        Take a device "name" - a string passed in by user to identify a NIC
+        device, and determine the device id - i.e. the domain:bus:slot.func-for
+        it, which can then be used to index into the devices array
+        '''
+        # dev = None
         # check if it's already a suitable index
-        if dev_name in devices:
+        if dev_name in self.nic_devices:
             return dev_name
         # check if it's an index just missing the domain part
-        elif "0000:" + dev_name in devices:
+        elif "0000:" + dev_name in self.nic_devices:
             return "0000:" + dev_name
         else:
             # check if it's an interface name, e.g. eth1
-            for d in devices.keys():
-                if dev_name in devices[d]["Interface"].split(","):
-                    return devices[d]["Slot"]
+            for dev in self.nic_devices.keys():
+                if dev_name in self.nic_devices[dev]["Interface"].split(","):
+                    return self.nic_devices[dev]["Slot"]
         # if nothing else matches - error
-        print ("Unknown device: %s. " \
-            "Please specify device in \"bus:slot.func\" format" % dev_name)
+        print ("Unknown device: %s. "
+               "Please specify device in \"bus:slot.func\" format" % dev_name)
         sys.exit(1)
+
 
 def main():
     '''program main function'''
